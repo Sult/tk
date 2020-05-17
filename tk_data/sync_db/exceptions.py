@@ -1,0 +1,2 @@
+class EntryParseError(Exception):
+    pass
