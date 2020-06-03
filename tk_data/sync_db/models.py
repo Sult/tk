@@ -1,4 +1,8 @@
+import copy
 import logging
+import uuid
+
+from dateutil.parser import parse as parse_date
 
 from django.apps import apps
 from django.contrib.postgres.fields import JSONField
@@ -26,49 +30,71 @@ class Entry(models.Model):
 
     def save(self, *args, **kwargs):
         try:
-            self.create_object()
+            model = self.get_model(self.data['category'])
+            content = copy.deepcopy(self.rename_namespace(self.data['content'])[self.data['category']['@term']])
+            model.objects.update_or_create(pk=uuid.UUID(content.get('@id')), defaults={'data': self.data})
             self.saved = True
         except Exception as exc:
-            # maybe do some other shit
-            logger.error(exc)
-
-        links = self.data['link']
-        if isinstance(links, dict):
-            links = [links]
-
-        # temp
-        count = 0
-        for link in links:
-            if link.get('@rel') == 'next':
-                count += 1
-                self.next = link.get('@href')
-
-        if count > 1:
-            breakpoint()
-
-        # TODO needs cleanup
+            logger.exception(exc)
+            return
         super().save(*args, **kwargs)
 
-    def create_object(self, data):
-        model = self.get_model(self.get_model(data['category']))
-        parsed_data = self.parse_entry_data(data['content'], model)
-        raise Exception("anus")
+    def create_object(self):
+        model = self.get_model(self.data['category'])
+        parsed_data = self.parse_entry_data(model)
+        try:
+            obj = model.objects.get(id=parsed_data['id'])
+            for key, value in parsed_data.items():
+                setattr(obj, key, value)
+            obj.save()
+            return obj
+        except model.DoesNotExist:
+            return model.objects.create(**parsed_data)
 
     @staticmethod
     def get_key_name(field_name):
         parts = field_name.split('_')
-        return '%s%s' % (parts[0], ''.join(p.title() for t in parts[1:]))
+        return '%s%s' % (parts[0], ''.join(p.title() for p in parts[1:]))
 
-    def parse_entry_data(self, content, model):
+    def rename_namespace(self, data):
+        for key in copy.deepcopy(data).keys():
+            # drop namespaces
+            if key.startswith('ns1:'):
+                data[key.replace('ns1:', '')] = data[key]
+            elif key.startswith('@ns1:'):
+                data[key.replace('@ns1:', '')] = data[key]
+        return data
+
+    def parse_entry_data(self, model):
         # always should be an id
-        parsed = {'id': content.pop('@id')}
+        content = copy.deepcopy(self.rename_namespace(self.data['content'])[self.data['category']['@term']])
+        parsed = {'id': uuid.UUID(content.get('@id'))}
 
+        content = self.rename_namespace(content)
         fields = model._meta.get_fields()
         for field in fields:
             if isinstance(field, models.ForeignKey):
-                parsed[field.name] = content[self.get_key_name(field.name)]['@ref']
-            elif field.name in ['gewijzigd_op', 'api_gewijzigd_op', 'verwijderd']:
+                parsed[field.name] = field.related_model.objects.get(id=content[self.get_key_name(field.name)]['@ref'])
 
+            elif field.name in content:
+                if content[field.name] == {'@xsi:nil': 'true'}:
+                    parsed[field.name] = None
+                else:
+                    if isinstance(field, models.DateTimeField):
+                        parsed[field.name] = parse_date(content[field.name])
+                    elif isinstance(field, models.BooleanField):
+                        parsed[field.name] = content[field.name] == 'true'
+                    elif isinstance(field, models.NullBooleanField):
+                        breakpoint()
+                    else:
+                        parsed[field.name] = content[field.name]
+
+        parsed['api_gewijzigd_op'] = None
+        parsed['verwijderd'] = content.get('@tk:verwijderd') == 'true'
+        if content.get('@tk:bijgewerkt'):
+            parsed['gewijzigd_op'] = parse_date(content.get('@tk:bijgewerkt'))
+
+        return parsed
 
     @staticmethod
     def get_model(category):
@@ -96,7 +122,7 @@ class Commissie(TweedeKamerMixin, models.Model):
 class Activiteit(TweedeKamerMixin, models.Model):
     """ https://opendata.tweedekamer.nl/documentatie/Activiteit """
 
-    voortouw_commissie = models.ForeignKey('sync_db.Commissie', null=True, blank=True, on_delete=models.SET_NULL)
+    voortouwcommissie = models.ForeignKey('sync_db.Commissie', null=True, blank=True, on_delete=models.SET_NULL)
 
     soort = models.CharField(max_length=255, blank=True, null=True)
     nummer = models.CharField(max_length=255, blank=True, null=True)
@@ -106,7 +132,7 @@ class Activiteit(TweedeKamerMixin, models.Model):
     aanvangstijd = models.DateTimeField(blank=True, null=True)
     eindtijd = models.DateTimeField(blank=True, null=True)
     locatie = models.TextField(null=True, blank=True)
-    besloten = models.BooleanField()
+    besloten = models.NullBooleanField(default=None)
     status = models.CharField(max_length=255, blank=True, null=True)
     vergaderjaar = models.CharField(max_length=255, blank=True, null=True)
     kamer = models.TextField(null=True, blank=True)
@@ -228,13 +254,13 @@ class Document(TweedeKamerMixin, models.Model):
 
     soort = models.CharField(max_length=255, blank=True, null=True)
     document_nummer = models.CharField(max_length=255, blank=True, null=True)
-    titel = models.CharField(max_length=255, blank=True, null=True)
-    onderwerp = models.CharField(max_length=255, blank=True, null=True)
+    titel = models.TextField(blank=True, null=True)
+    onderwerp = models.TextField(blank=True, null=True)
     datum = models.DateTimeField(null=True, blank=True)
     vergaderjaar = models.CharField(max_length=255, blank=True, null=True)
     kamer = models.IntegerField(null=True, blank=True)
     volgnummer = models.IntegerField(null=True, blank=True)
-    citeertitel = models.CharField(max_length=255, blank=True, null=True)
+    citeertitel = models.TextField(null=True, blank=True)
     alias = models.CharField(max_length=255, blank=True, null=True)
     document_registratie = models.DateTimeField(null=True, blank=True)
     datum_ontvangst = models.DateTimeField(null=True, blank=True)
@@ -326,7 +352,7 @@ class FractieZetelVacature(TweedeKamerMixin, models.Model):
     tot_en_met = models.DateTimeField(blank=True, null=True)
 
 
-class Kamerstukdossie(TweedeKamerMixin, models.Model):
+class Kamerstukdossier(TweedeKamerMixin, models.Model):
     """ https://opendata.tweedekamer.nl/documentatie/Kamerstukdossier """
 
     titel = models.TextField(null=True, blank=True)
@@ -335,7 +361,7 @@ class Kamerstukdossie(TweedeKamerMixin, models.Model):
     nummer = models.IntegerField(null=True, blank=True)
     toevoeging = models.CharField(max_length=255, blank=True, null=True)
     hoogste_volgnummer = models.IntegerField(null=True, blank=True)
-    afgesloten = models.BooleanField()
+    afgesloten = models.NullBooleanField(default=None)
     kamer = models.CharField(max_length=255, blank=True, null=True)
 
 
@@ -343,7 +369,7 @@ class Persoon(TweedeKamerMixin, models.Model):
     """ https://opendata.tweedekamer.nl/documentatie/Persoon """
 
     nummer = models.IntegerField(null=True, blank=True)
-    titels = models.CharField(max_length=255, blank=True, null=True)
+    titels = models.TextField(null=True, blank=True)
     initialen = models.CharField(max_length=255, blank=True, null=True)
     tussenvoegsel = models.CharField(max_length=255, blank=True, null=True)
     achternaam = models.CharField(max_length=255, blank=True, null=True)
@@ -389,8 +415,8 @@ class PersoonLoopbaan(TweedeKamerMixin, models.Model):
     omschrijving_nl = models.TextField(null=True, blank=True)
     omschrijving_en = models.TextField(null=True, blank=True)
     plaats = models.CharField(max_length=255, blank=True, null=True)
-    van = models.DateTimeField(blank=True, null=True)
-    tot_en_met = models.DateTimeField(blank=True, null=True)
+    van = models.CharField(max_length=255, blank=True, null=True)
+    tot_en_met = models.CharField(max_length=255, blank=True, null=True)
 
 
 class PersoonNevenfunctie(TweedeKamerMixin, models.Model):
@@ -399,8 +425,8 @@ class PersoonNevenfunctie(TweedeKamerMixin, models.Model):
     persoon = models.ForeignKey('sync_db.Persoon', null=True, blank=True, on_delete=models.SET_NULL)
 
     omschrijving = models.TextField(null=True, blank=True)
-    periode_van = models.DateTimeField(blank=True, null=True)
-    periode_tot_en_met = models.DateTimeField(blank=True, null=True)
+    periode_van = models.CharField(max_length=255, blank=True, null=True)
+    periode_tot_en_met = models.CharField(max_length=255, blank=True, null=True)
     is_actief = models.NullBooleanField()
     vergoeding_soort = models.CharField(max_length=255, blank=True, null=True)
     vergoeding_toelichting = models.CharField(max_length=255, blank=True, null=True)
@@ -415,7 +441,7 @@ class PersoonNevenfunctieInkomsten(TweedeKamerMixin, models.Model):
     bedrag_soort = models.CharField(max_length=255, blank=True, null=True)
     bedrag_voorvoegsel = models.CharField(max_length=255, blank=True, null=True)
     bedrag_valuta = models.CharField(max_length=255, blank=True, null=True)
-    bedrag = models.DecimalField(max_digits=11, decimal_places=2)
+    bedrag = models.DecimalField(max_digits=11, decimal_places=2, null=True, blank=True)
     bedrag_achtervoegsel = models.CharField(max_length=255, blank=True, null=True)
     frequentie = models.CharField(max_length=255, blank=True, null=True)
     frequentie_beschrijving = models.CharField(max_length=255, blank=True, null=True)
@@ -431,8 +457,8 @@ class PersoonOnderwijs(TweedeKamerMixin, models.Model):
     opleiding_en = models.TextField(null=True, blank=True)
     instelling = models.CharField(max_length=255, blank=True, null=True)
     plaats = models.CharField(max_length=255, blank=True, null=True)
-    van = models.DateTimeField(blank=True, null=True)
-    tot_en_met = models.DateTimeField(blank=True, null=True)
+    van = models.CharField(max_length=255, blank=True, null=True)
+    tot_en_met = models.CharField(max_length=255, blank=True, null=True)
 
 
 class PersoonReis(TweedeKamerMixin, models.Model):
@@ -467,7 +493,7 @@ class Stemming(TweedeKamerMixin, models.Model):
     fractie_grootte = models.IntegerField(null=True, blank=True)
     actor_naam = models.CharField(max_length=255, blank=True, null=True)
     actor_fractie = models.CharField(max_length=255, blank=True, null=True)
-    vergissing = models.BooleanField()
+    vergissing = models.NullBooleanField(default=None)
     sid_actor_lid = models.CharField(max_length=255, blank=True, null=True)
     sid_actor_fractie = models.CharField(max_length=255, blank=True, null=True)
 
@@ -502,8 +528,8 @@ class Zaak(TweedeKamerMixin, models.Model):
 
     nummer = models.CharField(max_length=255, blank=True, null=True)
     soort = models.CharField(max_length=255, blank=True, null=True)
-    titel = models.CharField(max_length=255, blank=True, null=True)
-    citeer_titel = models.CharField(max_length=255, blank=True, null=True)
+    titel = models.TextField(null=True, blank=True)
+    citeertitel = models.TextField(null=True, blank=True)
     alias = models.CharField(max_length=255, blank=True, null=True)
     status = models.CharField(max_length=255, blank=True, null=True)
     onderwerp = models.CharField(max_length=255, blank=True, null=True)
@@ -514,8 +540,8 @@ class Zaak(TweedeKamerMixin, models.Model):
     vergader_jaar = models.CharField(max_length=255, blank=True, null=True)
     volgnummer = models.IntegerField(blank=True, null=True)
     huidige_behandel_status = models.CharField(max_length=255, blank=True, null=True)
-    afgedaan = models.BooleanField()
-    groot_project = models.BooleanField()
+    afgedaan = models.NullBooleanField(default=None)
+    groot_project = models.NullBooleanField()
     kabinet_appreciatie = models.CharField(max_length=255, blank=True, null=True)
 
 
