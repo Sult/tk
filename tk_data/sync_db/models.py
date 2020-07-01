@@ -466,7 +466,7 @@ class PersoonReis(TweedeKamerMixin, models.Model):
 
     persoon = models.ForeignKey('sync_db.Persoon', null=True, blank=True, on_delete=models.SET_NULL)
 
-    doel = models.CharField(max_length=255, blank=True, null=True)
+    doel = models.TextField(blank=True, null=True)
     bestemming = models.CharField(max_length=255, blank=True, null=True)
     van = models.DateTimeField(blank=True, null=True)
     tot_en_met = models.DateTimeField(blank=True, null=True)
@@ -532,7 +532,7 @@ class Zaak(TweedeKamerMixin, models.Model):
     citeertitel = models.TextField(null=True, blank=True)
     alias = models.CharField(max_length=255, blank=True, null=True)
     status = models.CharField(max_length=255, blank=True, null=True)
-    onderwerp = models.CharField(max_length=255, blank=True, null=True)
+    onderwerp = models.TextField(null=True, blank=True)
     gestart_op = models.CharField(max_length=255, blank=True, null=True)
     orgainsatie = models.CharField(max_length=255, blank=True, null=True)
     grodnslag_voorhang = models.CharField(max_length=255, blank=True, null=True)
