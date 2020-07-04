@@ -1,6 +1,8 @@
 import uuid
 import copy
 import logging
+
+import requests
 from dateutil.parser import parse as parse_date
 from django.contrib.contenttypes.fields import GenericRelation
 from django.contrib.contenttypes.models import ContentType
@@ -25,11 +27,37 @@ class TweedeKamerMixin(models.Model):
         abstract = True
 
     def save(self, *args, **kwargs):
-        parsed_data = self.parse_entry_data()
-        for key, value in parsed_data.items():
-            setattr(self, key, value)
+        parsed_data = kwargs.pop('parsed_data', None)
+        if kwargs.pop('parse_data', True):
+            if not parsed_data:
+                parsed_data = self.parse_entry_data()
+
+            for key, value in parsed_data.items():
+                setattr(self, key, value)
 
         super().save(*args, **kwargs)
+
+    @classmethod
+    def create_from_json(cls, data):
+        """ use this method on response data from a direct openapi call instead of sync """
+
+        fields = cls._meta.get_fields()
+        parsed_data = {}
+        for field in fields:
+            key = cls.get_key_name(field.name)
+            if isinstance(field, models.ForeignKey) and data.get(key):
+                try:
+                    parsed[field.name] = field.related_model.objects.get(id=content[key]['@ref'])
+                except field.related_model.DoesNotExist as exc:
+                    parsed[field.name] = None
+                    parsed['saved_related'] = False
+                    self.mark_bugged(str(exc))
+                    logger.error('Couldnt not find related object(%) for %s',
+                                 field.related_model.__name__, self.__class__.__name__)
+
+
+
+
 
     def mark_bugged(self, error):
         """ create bugged related object """

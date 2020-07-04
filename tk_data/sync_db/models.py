@@ -79,9 +79,8 @@ class Entry(models.Model):
             return field.related_model.objects.get(id=content[self.get_key_name(field.name)]['@ref'])
         except field.related_model.DoesNotExist:
             response = requests.get(self.DATA_URL)
-
-            return
-
+            obj = field.related_model.create_from_json(response.json())
+            return obj
 
     def parse_entry_data(self, model):
         # always should be an id
@@ -194,6 +193,7 @@ class Besluit(TweedeKamerMixin, models.Model):
     """ https://opendata.tweedekamer.nl/documentatie/Besluit """
 
     agendapunt = models.ForeignKey('sync_db.Agendapunt', null=True, blank=True, on_delete=models.SET_NULL)
+    zaak = models.ForeignKey('sync_db.Zaak', null=True, blank=True, on_delete=models.SET_NULL)
 
     stemming_soort = models.CharField(max_length=255, blank=True, null=True)
     besluit_soort = models.CharField(max_length=255, blank=True, null=True)

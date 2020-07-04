@@ -33,3 +33,26 @@ url = "https://gegevensmagazijn.tweedekamer.nl/OData/v4/2.0/%s/%s"
 
 for model_str, ids in data.items():
     model = apps.get_model('sync_db', model_str)
+
+
+from django.db.models import CharField
+from django.db.models.functions import Length
+TextField.register_lookup(Length)
+serie = Stemming.objects.exclude(
+    besluit__stemming_soort=''
+).prefetch_related(
+    Prefetch('zaak', queryset=Zaak.objects.filter(soort='Wetgeving', titel__length__lt=144))
+)
+
+
+counter = 0
+length = Besluit.objects.count()
+for besluit in Besluit.objects.all():
+    try:
+        besluit.zaak = Zaak.objects.get(id=besluit.data['content']['besluit']['zaak']['@ref'])
+        besluit.save(parsed_data=False)
+    except:
+        pass
+    counter += 1
+    if counter % 1000 == 0:
+        print('%s/%s' % (counter, length))
