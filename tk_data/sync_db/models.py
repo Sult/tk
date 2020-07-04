@@ -2,6 +2,7 @@ import copy
 import logging
 import uuid
 
+import requests
 from dateutil.parser import parse as parse_date
 
 from django.apps import apps
@@ -23,6 +24,8 @@ class Feed(models.Model):
 
 
 class Entry(models.Model):
+    DATA_URL = 'https://gegevensmagazijn.tweedekamer.nl/OData/v4/2.0/%s/%s'
+
     id = models.CharField(max_length=255, primary_key=True)
     data = JSONField(default=dict)
     saved = models.BooleanField(default=False)
@@ -69,6 +72,17 @@ class Entry(models.Model):
                 data[key.replace('@ns1:', '')] = data[key]
         return data
 
+    def get_related_obj(self, field, content):
+        """ get related object from db, or pull from api otherwise """
+
+        try:
+            return field.related_model.objects.get(id=content[self.get_key_name(field.name)]['@ref'])
+        except field.related_model.DoesNotExist:
+            response = requests.get(self.DATA_URL)
+
+            return
+
+
     def parse_entry_data(self, model):
         # always should be an id
         content = copy.deepcopy(self.rename_namespace(self.data['content'])[self.data['category']['@term']])
@@ -78,7 +92,7 @@ class Entry(models.Model):
         fields = model._meta.get_fields()
         for field in fields:
             if isinstance(field, models.ForeignKey):
-                parsed[field.name] = field.related_model.objects.get(id=content[self.get_key_name(field.name)]['@ref'])
+                parsed[field.name] = self.get_related_obj(field, content)
 
             elif field.name in content:
                 if content[field.name] == {'@xsi:nil': 'true'}:
