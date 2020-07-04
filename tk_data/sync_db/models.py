@@ -5,6 +5,8 @@ import uuid
 from dateutil.parser import parse as parse_date
 
 from django.apps import apps
+from django.contrib.contenttypes.fields import GenericForeignKey
+from django.contrib.contenttypes.models import ContentType
 from django.contrib.postgres.fields import JSONField
 from django.db import models
 
@@ -29,14 +31,16 @@ class Entry(models.Model):
     next = models.URLField(max_length=255, blank=True, null=True)
 
     def save(self, *args, **kwargs):
-        try:
-            model = self.get_model(self.data['category'])
-            content = copy.deepcopy(self.rename_namespace(self.data['content'])[self.data['category']['@term']])
-            model.objects.update_or_create(pk=uuid.UUID(content.get('@id')), defaults={'data': self.data})
-            self.saved = True
-        except Exception as exc:
-            logger.exception(exc)
-            return
+        parse_data = kwargs.pop('parse_data', False)
+        if parse_data:
+            try:
+                model = self.get_model(self.data['category'])
+                content = copy.deepcopy(self.rename_namespace(self.data['content'])[self.data['category']['@term']])
+                model.objects.update_or_create(pk=uuid.UUID(content.get('@id')), defaults={'data': self.data})
+                self.saved = True
+            except Exception as exc:
+                logger.exception(exc)
+
         super().save(*args, **kwargs)
 
     def create_object(self):
@@ -565,3 +569,13 @@ class Zaal(TweedeKamerMixin, models.Model):
 
     naam = models.CharField(max_length=255, null=True, blank=True)
     sys_code = models.IntegerField(null=True, blank=True)
+
+
+class BuggedModel(models.Model):
+    """ ugly model to keep track of what objects couldnt (fully) be saved with relations etc """
+
+    content_type = models.ForeignKey(ContentType, on_delete=models.CASCADE)
+    object_id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    content_object = GenericForeignKey('content_type', 'object_id')
+
+    error = models.TextField(null=True, blank=True)

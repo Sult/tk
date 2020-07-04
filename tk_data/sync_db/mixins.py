@@ -2,6 +2,8 @@ import uuid
 import copy
 import logging
 from dateutil.parser import parse as parse_date
+from django.contrib.contenttypes.fields import GenericRelation
+from django.contrib.contenttypes.models import ContentType
 
 from django.contrib.postgres.fields import JSONField
 from django.db import models
@@ -13,6 +15,7 @@ class TweedeKamerMixin(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     data = JSONField(default=dict)
     saved_related = models.BooleanField(default=True)
+    bugged = GenericRelation('sync_db.BuggedModel')
 
     gewijzigd_op = models.DateTimeField(null=True, blank=True)
     api_gewijzigd_op = models.DateTimeField(blank=True, null=True)
@@ -27,6 +30,14 @@ class TweedeKamerMixin(models.Model):
             setattr(self, key, value)
 
         super().save(*args, **kwargs)
+
+    def mark_bugged(self, error):
+        """ create bugged related object """
+
+        from sync_db.models import BuggedModel
+        if not BuggedModel.objects.filter(
+                content_type=ContentType.objects.get_for_model(self.__class__), object_id=self.id).exists():
+            BuggedModel.objects.create(content_object=self)
 
     @staticmethod
     def get_key_name(field_name):
@@ -54,11 +65,28 @@ class TweedeKamerMixin(models.Model):
             if isinstance(field, models.ForeignKey) and content.get(key):
                 try:
                     parsed[field.name] = field.related_model.objects.get(id=content[key]['@ref'])
-                except field.related_model.DoesNotExist:
+                except field.related_model.DoesNotExist as exc:
                     parsed[field.name] = None
                     parsed['saved_related'] = False
+                    self.mark_bugged(str(exc))
                     logger.error('Couldnt not find related object(%) for %s',
                                  field.related_model.__name__, self.__class__.__name__)
+
+                    import json
+                    with open('missing.json', 'r') as f:
+                        missing = json.loads(f.read())
+
+                    model_name = field.related_model.__name__
+                    if model_name not in missing:
+                        missing[model_name] = []
+
+                    keys = set(missing[model_name])
+                    keys.add(content[key]['@ref'])
+                    missing[model_name] = list(keys)
+
+                    with open('missing.json', 'w') as f:
+                        f.write(json.dumps(missing, indent=2))
+
             elif key in content:
                 if content[key] == {'@xsi:nil': 'true'}:
                     parsed[field.name] = None
@@ -68,13 +96,6 @@ class TweedeKamerMixin(models.Model):
                     elif isinstance(field, (models.BooleanField, models.NullBooleanField)):
                         # null is already set when content[key] == {'@xsi:nil': 'true'}
                         parsed[field.name] = content[key] == 'true'
-                    # elif isinstance(field, models.NullBooleanField):
-                    #     if content[key] == 'true':
-                    #         parsed[field.name] = True
-                    #     elif content[key] == 'false':
-                    #         parsed[field.name] = False
-                    #     else:
-                    #         parsed[field.name] = None
                     else:
                         parsed[field.name] = content[key]
 
