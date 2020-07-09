@@ -17,8 +17,16 @@ votes = Stemming.objects.exclude(Q(besluit__zaak__titel__icontains='gemeente') a
 votes = Stemming.objects.exclude(besluit__zaak__titel__icontains='PbEU')
 
 # Combined query:
-votes = Stemming.objects.filter(besluit__zaak__soort = 'Wetgeving') \
+votes = Stemming.objects \
+    .filter(besluit__zaak__soort = 'Wetgeving') \
     .exclude(besluit__stemming_soort='') \
     .exclude(Q(besluit__zaak__titel__icontains='gemeente') and Q(besluit__zaak__titel__icontains='amenvoeg')) \
     .exclude(Q(besluit__zaak__titel__icontains='gemeente') and Q(besluit__zaak__titel__icontains='herindeling')) \
-    .exclude(besluit__zaak__titel__icontains='PbEU')
+    .exclude(besluit__zaak__titel__icontains='PbEU') \
+    .exclude(besluit__zaak__titel__icontains='PbEG') \
+
+
+
+# NOTES
+# - if all parties agree the ballot is not that relevant
+# - if only a few, or even just one party, vote contrarian, the ballot can be (very) relevant
