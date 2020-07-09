@@ -1,20 +1,15 @@
+from django.db.models import Q
+from django.db.models import TextField
+from django.db.models import CharField
+from django.db.models.functions import Length
+
+CharField.register_lookup(Length)
+TextField.register_lookup(Length)
+
+
 # All votes
 votes = Stemming.objects
 
-# Filter all votes about laws
-votes = Stemming.objects.filter(besluit__zaak__soort = 'Wetgeving')
-
-# Exclude votes that have not reached the floor
-votes = Stemming.objects.exclude(besluit__stemming_soort='')
-
-# Exclude votes about merging city councils
-votes = Stemming.objects.exclude(Q(besluit__zaak__titel__icontains='gemeente') and Q(besluit__zaak__titel__icontains='amenvoeg'))
-
-# Exclude votes about cities reorganisations
-votes = Stemming.objects.exclude(Q(besluit__zaak__titel__icontains='gemeente') and Q(besluit__zaak__titel__icontains='herindeling'))
-
-# Exclude votes about EU publications
-votes = Stemming.objects.exclude(besluit__zaak__titel__icontains='PbEU')
 
 # Combined query:
 votes = Stemming.objects \
@@ -25,6 +20,14 @@ votes = Stemming.objects \
     .exclude(besluit__zaak__titel__icontains='PbEU') \
     .exclude(besluit__zaak__titel__icontains='PbEG') \
 
+
+# Result
+bills = set()
+for vote in votes:
+    bills.add(vote.besluit.zaak.titel)
+for title in bills:
+    print(title)
+len(bills) #
 
 
 # NOTES
