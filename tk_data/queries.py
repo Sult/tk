@@ -35,12 +35,16 @@ votes = Stemming.objects \
     .filter( \
         Q(besluit__zaak__titel__contains = 'alcohol') |
         Q(besluit__zaak__titel__contains = 'asiel') |
+        Q(besluit__zaak__titel__contains = 'aow') |
+        Q(besluit__zaak__titel__contains = 'belasting') |
         Q(besluit__zaak__titel__contains = 'bijstand') |
         Q(besluit__zaak__titel__contains = 'coffeeshop') |
         Q(besluit__zaak__titel__contains = 'covid') |
+        Q(besluit__zaak__titel__contains = 'crimineel') |
         Q(besluit__zaak__titel__contains = 'crisis') |
         Q(besluit__zaak__titel__contains = 'dieren') |
         Q(besluit__zaak__titel__contains = 'energietransitie') |
+        Q(besluit__zaak__titel__contains = 'flexwerk') |
         Q(besluit__zaak__titel__contains = 'geloof') |
         Q(besluit__zaak__titel__contains = 'hulp bij') |
         Q(besluit__zaak__titel__contains = 'huur') |
@@ -81,6 +85,7 @@ votes = Stemming.objects \
         Q(besluit__zaak__titel__contains = 'vervolging') |
         Q(besluit__zaak__titel__contains = 'vreemdelingen') |
         Q(besluit__zaak__titel__contains = 'vuurwerk') |
+        Q(besluit__zaak__titel__contains = 'wao') |
         Q(besluit__zaak__titel__contains = 'ziek') |
         Q(besluit__zaak__titel__contains = 'zorg')) \
         .filter(besluit__zaak__soort = 'Wetgeving', besluit__zaak__titel__length__lt = 144)
