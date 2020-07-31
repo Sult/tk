@@ -553,7 +553,7 @@ class Zaak(TweedeKamerMixin, models.Model):
     onderwerp = models.TextField(null=True, blank=True)
     gestart_op = models.CharField(max_length=255, blank=True, null=True)
     orgainsatie = models.CharField(max_length=255, blank=True, null=True)
-    grodnslag_voorhang = models.CharField(max_length=255, blank=True, null=True)
+    grondslagvoorhang = models.CharField(max_length=255, blank=True, null=True)
     termijn = models.DateTimeField(blank=True, null=True)
     vergader_jaar = models.CharField(max_length=255, blank=True, null=True)
     volgnummer = models.IntegerField(blank=True, null=True)
