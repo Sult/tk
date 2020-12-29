@@ -14,6 +14,8 @@ logger = logging.getLogger(__name__)
 
 
 class TweedeKamerMixin(models.Model):
+    DATA_URL = 'https://gegevensmagazijn.tweedekamer.nl/OData/v4/2.0/%s/%s'
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     data = JSONField(default=dict)
     saved_related = models.BooleanField(default=True)
@@ -37,27 +39,42 @@ class TweedeKamerMixin(models.Model):
 
         super().save(*args, **kwargs)
 
+    @staticmethod
+    def get_key_name(field_name):
+        parts = field_name.split('_')
+        return '%s%s' % (parts[0], ''.join(p.title() for p in parts[1:]))
+
+    @staticmethod
+    def get_json_key(field_name):
+        parts = field_name.split('_')
+        return ''.join(p.title() for p in parts)
+
     @classmethod
     def create_from_json(cls, data):
         """ use this method on response data from a direct openapi call instead of sync """
 
         fields = cls._meta.get_fields()
-        parsed_data = {}
+        parsed = {'data': data}
         for field in fields:
-            key = cls.get_key_name(field.name)
+            key = cls.get_json_key(field.name)
             if isinstance(field, models.ForeignKey) and data.get(key):
                 try:
-                    parsed[field.name] = field.related_model.objects.get(id=content[key]['@ref'])
+                    parsed[field.name] = field.related_model.objects.get(id=data[key]['@ref'])
                 except field.related_model.DoesNotExist as exc:
                     parsed[field.name] = None
                     parsed['saved_related'] = False
-                    self.mark_bugged(str(exc))
-                    logger.error('Couldnt not find related object(%) for %s',
-                                 field.related_model.__name__, self.__class__.__name__)
+            elif key in data:
+                if isinstance(field, models.DateTimeField):
+                    if data[key]:
+                        parsed[field.name] = parse_date(data[key])
+                if isinstance(field, models.BooleanField):
+                    parsed[field.name] = data[key] == True
+                else:
+                    parsed[field.name] = data[key]
 
-
-
-
+        obj = cls()
+        obj.save(parsed_data=parsed)
+        return obj
 
     def mark_bugged(self, error):
         """ create bugged related object """
@@ -67,11 +84,6 @@ class TweedeKamerMixin(models.Model):
                 content_type=ContentType.objects.get_for_model(self.__class__), object_id=self.id).exists():
             BuggedModel.objects.create(content_object=self)
 
-    @staticmethod
-    def get_key_name(field_name):
-        parts = field_name.split('_')
-        return '%s%s' % (parts[0], ''.join(p.title() for p in parts[1:]))
-
     def rename_namespace(self, data):
         for key in copy.deepcopy(data).keys():
             # drop namespaces
@@ -80,6 +92,16 @@ class TweedeKamerMixin(models.Model):
             elif key.startswith('@ns1:'):
                 data[key.replace('@ns1:', '')] = data[key]
         return data
+
+    def get_related_obj(self, field, pk):
+        """ get related object from db, or pull from api otherwise """
+
+        try:
+            return field.related_model.objects.get(id=pk)
+        except field.related_model.DoesNotExist:
+            response = requests.get(self.DATA_URL % (field.related_model.__name__, pk))
+            obj = field.related_model.create_from_json(response.json())
+            return obj
 
     def parse_entry_data(self):
         # always should be an id
@@ -92,28 +114,13 @@ class TweedeKamerMixin(models.Model):
             key = self.get_key_name(field.name)
             if isinstance(field, models.ForeignKey) and content.get(key):
                 try:
-                    parsed[field.name] = field.related_model.objects.get(id=content[key]['@ref'])
+                    parsed[field.name] = self.get_related_obj(field, content[self.get_key_name(field.name)]['@ref'])
                 except field.related_model.DoesNotExist as exc:
                     parsed[field.name] = None
                     parsed['saved_related'] = False
                     self.mark_bugged(str(exc))
                     logger.error('Couldnt not find related object(%) for %s',
                                  field.related_model.__name__, self.__class__.__name__)
-
-                    import json
-                    with open('missing.json', 'r') as f:
-                        missing = json.loads(f.read())
-
-                    model_name = field.related_model.__name__
-                    if model_name not in missing:
-                        missing[model_name] = []
-
-                    keys = set(missing[model_name])
-                    keys.add(content[key]['@ref'])
-                    missing[model_name] = list(keys)
-
-                    with open('missing.json', 'w') as f:
-                        f.write(json.dumps(missing, indent=2))
 
             elif key in content:
                 if content[key] == {'@xsi:nil': 'true'}:

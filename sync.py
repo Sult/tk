@@ -56,3 +56,18 @@ for besluit in Besluit.objects.all():
     counter += 1
     if counter % 1000 == 0:
         print('%s/%s' % (counter, length))
+
+
+counter = 0
+entries = Entry.objects.filter(saved=False)
+length = entries.count()
+
+for entry in entries:
+    entry.save()
+    counter += 1
+    if counter % 1000 == 0:
+        print('%s/%s' % (counter, length))
+
+
+
+data = Stemming.objects.exclude

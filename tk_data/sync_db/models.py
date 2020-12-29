@@ -34,15 +34,12 @@ class Entry(models.Model):
     next = models.URLField(max_length=255, blank=True, null=True)
 
     def save(self, *args, **kwargs):
-        parse_data = kwargs.pop('parse_data', False)
+        parse_data = kwargs.pop('parse_data', True)
         if parse_data:
-            try:
-                model = self.get_model(self.data['category'])
-                content = copy.deepcopy(self.rename_namespace(self.data['content'])[self.data['category']['@term']])
-                model.objects.update_or_create(pk=uuid.UUID(content.get('@id')), defaults={'data': self.data})
-                self.saved = True
-            except Exception as exc:
-                logger.exception(exc)
+            model = self.get_model(self.data['category'])
+            content = copy.deepcopy(self.rename_namespace(self.data['content'])[self.data['category']['@term']])
+            model.objects.update_or_create(pk=uuid.UUID(content.get('@id')), defaults={'data': self.data})
+            self.saved = True
 
         super().save(*args, **kwargs)
 
@@ -101,8 +98,6 @@ class Entry(models.Model):
                         parsed[field.name] = parse_date(content[field.name])
                     elif isinstance(field, models.BooleanField):
                         parsed[field.name] = content[field.name] == 'true'
-                    elif isinstance(field, models.NullBooleanField):
-                        breakpoint()
                     else:
                         parsed[field.name] = content[field.name]
 
