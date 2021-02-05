@@ -1,15 +1,18 @@
 import copy
 import logging
+import time
 import uuid
+from datetime import datetime
 
 import requests
+import xmltodict
 from dateutil.parser import parse as parse_date
 
 from django.apps import apps
 from django.contrib.contenttypes.fields import GenericForeignKey
 from django.contrib.contenttypes.models import ContentType
-from django.contrib.postgres.fields import JSONField
-from django.db import models
+from django.db import models, transaction
+from requests.exceptions import SSLError
 
 from sync_db.exceptions import EntryParseError
 from sync_db.mixins import TweedeKamerMixin
@@ -20,31 +23,65 @@ logger = logging.getLogger(__name__)
 class Feed(models.Model):
     url = models.URLField()
     next = models.URLField(null=True, blank=True)
-    data = JSONField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    data = models.JSONField()
+
+    @classmethod
+    def sync(cls):
+        """ Run feed to sync data """
+        last = Feed.objects.exclude(next=None).order_by('-created_at').first()
+        url = last.next if last else 'https://gegevensmagazijn.tweedekamer.nl/SyncFeed/2.0/Feed'
+
+        while url:
+            now = datetime.now()
+            print("%s Saving: %s" % ('%s:%s:%s' % (now.hour, now.minute, now.second), url))
+            with transaction.atomic():
+                url = cls._run_sync(url)
+
+    @classmethod
+    def _run_sync(cls, url):
+        response = requests.get(url)
+
+        # force to dict
+        data = xmltodict.parse(response.content.decode())
+
+        feed = data['feed']
+        entries = feed['entry']
+        del feed['entry']
+
+        next_url = [u['@href'] for u in feed['link'] if u['@rel'] == 'next']
+        if next_url:
+            next_url = next_url[0]
+
+        # save feed
+        feed = Feed.objects.create(
+            url=url,
+            next=next_url if next_url else None,
+            data=feed
+        )
+
+        # add entries
+        print("adding entries")
+        for entry in entries:
+            db_entry, _created = Entry.objects.get_or_create(id=entry['title'])
+            db_entry.url = entry['id']
+            db_entry.data = entry
+            db_entry.save()
+
+            # save to object
+            db_entry.create_object()
+
+        return feed.next
 
 
 class Entry(models.Model):
     DATA_URL = 'https://gegevensmagazijn.tweedekamer.nl/OData/v4/2.0/%s/%s'
 
     id = models.CharField(max_length=255, primary_key=True)
-    data = JSONField(default=dict)
-    saved = models.BooleanField(default=False)
+    data = models.JSONField(default=dict)
 
     url = models.URLField(max_length=255, blank=True, null=True)
     next = models.URLField(max_length=255, blank=True, null=True)
-
-    def save(self, *args, **kwargs):
-        parse_data = kwargs.pop('parse_data', False)
-        if parse_data:
-            try:
-                model = self.get_model(self.data['category'])
-                content = copy.deepcopy(self.rename_namespace(self.data['content'])[self.data['category']['@term']])
-                model.objects.update_or_create(pk=uuid.UUID(content.get('@id')), defaults={'data': self.data})
-                self.saved = True
-            except Exception as exc:
-                logger.exception(exc)
-
-        super().save(*args, **kwargs)
 
     def create_object(self):
         model = self.get_model(self.data['category'])
@@ -75,12 +112,39 @@ class Entry(models.Model):
     def get_related_obj(self, field, content):
         """ get related object from db, or pull from api otherwise """
 
+        name_mapping = {
+            "voortouwcommissie": "commissie",
+            "huidigeDocumentVersie": "documentversie",
+        }
+        # no idea why this happens but seems it can
+        ignore_mapping = {
+            "fractie": [ActiviteitActor, ]
+        }
+
+        key = self.get_key_name(field.name)
         try:
-            return field.related_model.objects.get(id=content[self.get_key_name(field.name)]['@ref'])
+            if content[key].get('@xsi:nil') == 'true':
+                return
+            return field.related_model.objects.get(id=content[key]['@ref'])
         except field.related_model.DoesNotExist:
-            response = requests.get(self.DATA_URL)
-            obj = field.related_model.create_from_json(response.json())
-            return obj
+            try:
+                response = requests.get(self.DATA_URL % (name_mapping.get(key, key), content[key]['@ref']))
+                obj = field.related_model.create_from_json(response.json())
+                return obj
+            except SSLError:
+                print("SSL error: retrying in a bit")
+                time.sleep(10)
+                return self.get_related_obj(field, content)
+
+            except Exception as exc:
+                breakpoint()
+                raise
+        except KeyError as exc:
+            if exc.args[0] in ignore_mapping and self.get_model(self.data['category']) in ignore_mapping[exc.args[0]]:
+                return
+        except Exception as exc:
+            breakpoint()
+            raise
 
     def parse_entry_data(self, model):
         # always should be an id
@@ -88,10 +152,20 @@ class Entry(models.Model):
         parsed = {'id': uuid.UUID(content.get('@id'))}
 
         content = self.rename_namespace(content)
+        parsed['api_gewijzigd_op'] = None
+        parsed['verwijderd'] = content.get('@tk:verwijderd') == 'true'
+        if content.get('@tk:bijgewerkt'):
+            parsed['gewijzigd_op'] = parse_date(content.get('@tk:bijgewerkt'))
+
+        if parsed['verwijderd']:
+            return parsed
+
         fields = model._meta.get_fields()
         for field in fields:
             if isinstance(field, models.ForeignKey):
-                parsed[field.name] = self.get_related_obj(field, content)
+                obj = self.get_related_obj(field, content)
+                if obj:
+                    parsed[field.name] = obj
 
             elif field.name in content:
                 if content[field.name] == {'@xsi:nil': 'true'}:
@@ -105,11 +179,6 @@ class Entry(models.Model):
                         breakpoint()
                     else:
                         parsed[field.name] = content[field.name]
-
-        parsed['api_gewijzigd_op'] = None
-        parsed['verwijderd'] = content.get('@tk:verwijderd') == 'true'
-        if content.get('@tk:bijgewerkt'):
-            parsed['gewijzigd_op'] = parse_date(content.get('@tk:bijgewerkt'))
 
         return parsed
 
@@ -149,7 +218,7 @@ class Activiteit(TweedeKamerMixin, models.Model):
     aanvangstijd = models.DateTimeField(blank=True, null=True)
     eindtijd = models.DateTimeField(blank=True, null=True)
     locatie = models.TextField(null=True, blank=True)
-    besloten = models.NullBooleanField(default=None)
+    besloten = models.BooleanField(null=True, default=None)
     status = models.CharField(max_length=255, blank=True, null=True)
     vergaderjaar = models.CharField(max_length=255, blank=True, null=True)
     kamer = models.TextField(null=True, blank=True)
@@ -223,7 +292,7 @@ class CommissieZetel(TweedeKamerMixin, models.Model):
 class CommissieZetelVastPersoon(TweedeKamerMixin, models.Model):
     """ https://opendata.tweedekamer.nl/documentatie/CommissieZetelVastPersoon """
 
-    commissie = models.ForeignKey('sync_db.Commissie', null=True, blank=True, on_delete=models.SET_NULL)
+    commissie_zetel = models.ForeignKey('sync_db.CommissieZetel', null=True, blank=True, on_delete=models.SET_NULL)
     persoon = models.ForeignKey('sync_db.Persoon', null=True, blank=True, on_delete=models.SET_NULL)
 
     functie = models.CharField(max_length=255, blank=True, null=True)
@@ -234,8 +303,8 @@ class CommissieZetelVastPersoon(TweedeKamerMixin, models.Model):
 class CommissieZetelVastVacature(TweedeKamerMixin, models.Model):
     """ https://opendata.tweedekamer.nl/documentatie/CommissieZetelVastVacature """
 
-    commissie = models.ForeignKey('sync_db.Commissie', null=True, blank=True, on_delete=models.SET_NULL)
-    persoon = models.ForeignKey('sync_db.Persoon', null=True, blank=True, on_delete=models.SET_NULL)
+    commissie_zetel = models.ForeignKey('sync_db.CommissieZetel', null=True, blank=True, on_delete=models.SET_NULL)
+    fractie = models.ForeignKey('sync_db.Fractie', null=True, blank=True, on_delete=models.SET_NULL)
 
     functie = models.CharField(max_length=255, blank=True, null=True)
     van = models.DateTimeField(blank=True, null=True)
@@ -245,7 +314,7 @@ class CommissieZetelVastVacature(TweedeKamerMixin, models.Model):
 class CommissieZetelVervangerPersoon(TweedeKamerMixin, models.Model):
     """ https://opendata.tweedekamer.nl/documentatie/CommissieZetelVastVacature """
 
-    commissie = models.ForeignKey('sync_db.Commissie', null=True, blank=True, on_delete=models.SET_NULL)
+    commissie_zetel = models.ForeignKey('sync_db.CommissieZetel', null=True, blank=True, on_delete=models.SET_NULL)
     persoon = models.ForeignKey('sync_db.Persoon', null=True, blank=True, on_delete=models.SET_NULL)
 
     functie = models.CharField(max_length=255, blank=True, null=True)
@@ -256,8 +325,8 @@ class CommissieZetelVervangerPersoon(TweedeKamerMixin, models.Model):
 class CommissieZetelVervangerVacature(TweedeKamerMixin, models.Model):
     """ https://opendata.tweedekamer.nl/documentatie/CommissieZetelVervangerVacature """
 
-    commissie = models.ForeignKey('sync_db.Commissie', null=True, blank=True, on_delete=models.SET_NULL)
-    persoon = models.ForeignKey('sync_db.Persoon', null=True, blank=True, on_delete=models.SET_NULL)
+    commissie_zetel = models.ForeignKey('sync_db.CommissieZetel', null=True, blank=True, on_delete=models.SET_NULL)
+    fractie = models.ForeignKey('sync_db.Fractie', null=True, blank=True, on_delete=models.SET_NULL)
 
     functie = models.CharField(max_length=255, blank=True, null=True)
     van = models.DateTimeField(blank=True, null=True)
@@ -352,7 +421,6 @@ class FractieZetel(TweedeKamerMixin, models.Model):
 class FractieZetelPersoon(TweedeKamerMixin, models.Model):
     """ https://opendata.tweedekamer.nl/documentatie/FractieZetelPersoon """
 
-    fractie = models.ForeignKey('sync_db.Fractie', null=True, blank=True, on_delete=models.SET_NULL)
     fractie_zetel = models.ForeignKey('sync_db.FractieZetel', null=True, blank=True, on_delete=models.SET_NULL)
     persoon = models.ForeignKey('sync_db.Persoon', null=True, blank=True, on_delete=models.SET_NULL)
 
@@ -379,7 +447,7 @@ class Kamerstukdossier(TweedeKamerMixin, models.Model):
     nummer = models.IntegerField(null=True, blank=True)
     toevoeging = models.CharField(max_length=255, blank=True, null=True)
     hoogste_volgnummer = models.IntegerField(null=True, blank=True)
-    afgesloten = models.NullBooleanField(default=None)
+    afgesloten = models.BooleanField(null=True, default=None)
     kamer = models.CharField(max_length=255, blank=True, null=True)
 
 
@@ -445,7 +513,7 @@ class PersoonNevenfunctie(TweedeKamerMixin, models.Model):
     omschrijving = models.TextField(null=True, blank=True)
     periode_van = models.CharField(max_length=255, blank=True, null=True)
     periode_tot_en_met = models.CharField(max_length=255, blank=True, null=True)
-    is_actief = models.NullBooleanField()
+    is_actief = models.BooleanField(null=True)
     vergoeding_soort = models.CharField(max_length=255, blank=True, null=True)
     vergoeding_toelichting = models.CharField(max_length=255, blank=True, null=True)
 
@@ -453,7 +521,7 @@ class PersoonNevenfunctie(TweedeKamerMixin, models.Model):
 class PersoonNevenfunctieInkomsten(TweedeKamerMixin, models.Model):
     """ https://opendata.tweedekamer.nl/documentatie/PersoonNevenfunctieInkomsten """
 
-    nevenfunctie = models.ForeignKey('sync_db.PersoonNevenfunctie', null=True, blank=True, on_delete=models.SET_NULL)
+    persoon_nevenfunctie = models.ForeignKey('sync_db.PersoonNevenfunctie', null=True, blank=True, on_delete=models.SET_NULL)
 
     jaar = models.CharField(max_length=255, blank=True, null=True)
     bedrag_soort = models.CharField(max_length=255, blank=True, null=True)
@@ -511,7 +579,7 @@ class Stemming(TweedeKamerMixin, models.Model):
     fractie_grootte = models.IntegerField(null=True, blank=True)
     actor_naam = models.CharField(max_length=255, blank=True, null=True)
     actor_fractie = models.CharField(max_length=255, blank=True, null=True)
-    vergissing = models.NullBooleanField(default=None)
+    vergissing = models.BooleanField(null=True, default=None)
     sid_actor_lid = models.CharField(max_length=255, blank=True, null=True)
     sid_actor_fractie = models.CharField(max_length=255, blank=True, null=True)
 
@@ -558,8 +626,8 @@ class Zaak(TweedeKamerMixin, models.Model):
     vergader_jaar = models.CharField(max_length=255, blank=True, null=True)
     volgnummer = models.IntegerField(blank=True, null=True)
     huidige_behandel_status = models.CharField(max_length=255, blank=True, null=True)
-    afgedaan = models.NullBooleanField(default=None)
-    groot_project = models.NullBooleanField()
+    afgedaan = models.BooleanField(null=True, default=None)
+    groot_project = models.BooleanField(null=True)
     kabinet_appreciatie = models.CharField(max_length=255, blank=True, null=True)
 
 

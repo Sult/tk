@@ -79,7 +79,7 @@ WSGI_APPLICATION = 'tk_data.wsgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql_psycopg2',
-        'NAME': 'tkdata',
+        'NAME': 'tkdata_new',
         'USER': 'username',
         'PASSWORD': 'password',
         'HOST': '127.0.0.1',

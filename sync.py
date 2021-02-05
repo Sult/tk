@@ -8,9 +8,10 @@ response = requests.get(XSDS_URL)
 
 data = xmltodict.parse(response.content.decode())
 
-# get feed
+# get feed 039
 response = requests.get(BASE_URL + 'Feed')
 # sshuttle --dns -r sult@codesaur.nl 147.181.96.41/32
+https://github.com/NicolasLM/atoma
 
 
 before = BuggedModel.objects.all().count()
