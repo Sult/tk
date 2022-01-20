@@ -152,13 +152,13 @@ class Entry(models.Model):
         parsed = {'id': uuid.UUID(content.get('@id'))}
 
         content = self.rename_namespace(content)
-        parsed['api_gewijzigd_op'] = None
         parsed['verwijderd'] = content.get('@tk:verwijderd') == 'true'
-        if content.get('@tk:bijgewerkt'):
-            parsed['gewijzigd_op'] = parse_date(content.get('@tk:bijgewerkt'))
-
         if parsed['verwijderd']:
             return parsed
+
+        if content.get('@tk:bijgewerkt'):
+            breakpoint()
+            parsed['gewijzigd_op'] = parse_date(content.get('@tk:bijgewerkt'))
 
         fields = model._meta.get_fields()
         for field in fields:

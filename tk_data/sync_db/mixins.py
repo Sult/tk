@@ -12,10 +12,8 @@ class TweedeKamerMixin(models.Model):
     DATA_URL = 'https://gegevensmagazijn.tweedekamer.nl/OData/v4/2.0/%s/%s'
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    data = models.JSONField(default=dict)
 
     gewijzigd_op = models.DateTimeField(null=True, blank=True)
-    api_gewijzigd_op = models.DateTimeField(blank=True, null=True)
     verwijderd = models.BooleanField(default=False)
 
     class Meta:
